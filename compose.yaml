@@ -1,0 +1,20 @@
+services:
+  sync:
+    build: .
+    environment:
+      PORT: 8787
+      DATA_DIR: /data
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?set ADMIN_TOKEN}
+    ports:
+      - "8787:8787"
+    volumes:
+      - sync-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+volumes:
+  sync-data:
