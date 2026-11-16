@@ -6,7 +6,6 @@ RUN addgroup -S app && adduser -S -G app app
 
 COPY package.json ./
 COPY src ./src
-COPY tools ./tools
 
 RUN mkdir -p /data && chown -R app:app /app /data
 

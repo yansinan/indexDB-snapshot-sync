@@ -1,33 +1,30 @@
 # Auth decision
 
-Use opaque bearer tokens.
+Use an opaque Bearer token (`SYNC_TOKEN`) for the first version.
 
-## Tokens
+## Why this is enough for v1
 
-- `ADMIN_TOKEN`: deployment secret, only for creating/revoking project tokens.
-- `project token`: one per project/namespace, used by browser sync clients.
-- Generate 32 random bytes, encode base64url, show once.
-- Store only `sha256(token)` on the server.
+- one small self-hosted service;
+- one family/small trusted group;
+- immediate rotate/revoke by changing the env token;
+- no user accounts, JWT, OAuth server, or signing-key rotation.
 
 ## Request
 
 ```http
-Authorization: Bearer <project-token>
+Authorization: Bearer <SYNC_TOKEN>
 ```
 
-## Why not JWT
+## Future
 
-- no token server needed;
-- revocation is immediate (delete/rotate hash);
-- no signing key rotation;
-- small scope, few clients;
-- no claims/refresh flow required.
+If multiple projects need separate credentials, add a project-token table/file with
+SHA-256 hashes and an `ADMIN_TOKEN`-protected token-management endpoint.
 
 ## Operational rules
 
 - TLS terminated by a reverse proxy;
-- CORS allowlist per project;
-- rate limit per token/IP;
-- request body limit;
-- rotate tokens on device loss;
-- never put tokens in URLs.
+- CORS allowlist via `CORS_ORIGIN`;
+- request body limit 8 MB;
+- do not put tokens in URLs;
+- rotate token on device loss;
+- back up `DATA_DIR`.

@@ -12,7 +12,7 @@ existing IndexedDB                existing IndexedDB
         └──── snapshot sync SDK ─────────┘
                          │
               snapshot sync service
-              SQLite / JSON volume
+              JSON file storage
 ```
 
 ## First version
@@ -22,19 +22,25 @@ existing IndexedDB                existing IndexedDB
 - Client `GET /snapshot` → merge → `importAll()`.
 - Revision / `If-Match` optimistic concurrency.
 - Opaque JSON; server does not know store schemas.
+- One file per snapshot; atomic temp-file + rename.
+
+## Storage layout
+
+```text
+DATA_DIR/
+  projects/
+    <project>/
+      <namespace>/
+        snapshot.json
+```
+
+No database, no migration, no sidecar.
 
 ## Auth
 
-- `ADMIN_TOKEN` only for project/token administration.
-- Project/device bearer tokens for sync.
-- Tokens stored as SHA-256 hashes.
-- No JWT, OAuth server, or user database in v1.
-
-## Storage target
-
-- Default: one small SQLite file, or JSON snapshots for the first bootstrap.
-- Docker volume `/data`; no database sidecar.
-- Keep old snapshot revisions for recovery.
+- One `SYNC_TOKEN` per service instance in v1.
+- Bearer token only; SHA-256 comparison in constant time.
+- Project token administration is a future extension.
 
 ## Non-goals
 
