@@ -2,7 +2,7 @@
 
 Base URL: `http://localhost:8787`
 
-All responses are JSON. Errors have the shape:
+All responses are JSON. Errors:
 
 ```json
 {"error":"error_code","message":"optional detail"}
@@ -25,31 +25,88 @@ No auth.
 }
 ```
 
-## Pair a device
+## Enroll
 
 ```http
-POST /v1/auth/pair
+POST /v1/enroll
 Content-Type: application/json
-
-{"code":"ABCD-EFGH","deviceName":"Child A browser"}
 ```
 
-- `201` on success
-- `400` invalid/expired/used code
-- `429` too many attempts from this IP
+Exactly one credential is required.
 
-Response:
+### New project
 
 ```json
 {
-  "deviceId": "dev_...",
-  "token": "dev_...",
-  "deviceName": "Child A browser",
-  "project": "spellwell",
-  "namespace": "child-a",
-  "user": {"id":"usr_...","name":"Child A"}
+  "bootstrapCode": "BOOT-...",
+  "userName": "用户甲",
+  "deviceName": "甲的浏览器"
 }
 ```
+
+### New user in an existing project
+
+```json
+{
+  "projectId": "proj_...",
+  "userName": "用户乙",
+  "deviceName": "乙的浏览器"
+}
+```
+
+### New device for an existing user
+
+```json
+{
+  "pairingCode": "ABCD-EFGH",
+  "deviceName": "甲的 iPad"
+}
+```
+
+### Success
+
+`201`
+
+```json
+{
+  "projectId": "proj_...",
+  "deviceToken": "dev_...",
+  "user": {"id":"usr_...","name":"用户甲"},
+  "device": {"id":"dev_...","name":"甲的浏览器"}
+}
+```
+
+Errors:
+
+- `400 invalid_enrollment` — zero or more than one credential;
+- `400 invalid_pairing_code` — bad/used code;
+- `400 pairing_code_expired`;
+- `401 invalid_bootstrap_code`;
+- `404 project_not_found`;
+- `429 too_many_attempts`.
+
+The bootstrap code is one-time and is rotated after successful project creation.
+
+## Create pairing code
+
+```http
+POST /v1/pairing-codes
+Authorization: Bearer dev_...
+Content-Type: application/json
+
+{"ttlSeconds":600}
+```
+
+`ttlSeconds` is optional, default 600, range 60—86400.
+
+Response `201`:
+
+```json
+{"code":"ABCD-EFGH","expiresAt":"..."}
+```
+
+Only the user's own enrolled device can create the code; project/user are derived
+from the device token.
 
 ## Current identity
 
@@ -60,10 +117,10 @@ Authorization: Bearer dev_...
 
 ```json
 {
-  "project": "spellwell",
-  "namespace": "child-a",
-  "user": {"id":"usr_...","name":"Child A"},
-  "device": {"id":"dev_...","name":"Child A browser"}
+  "projectId": "proj_...",
+  "namespace": "user-...",
+  "user": {"id":"usr_...","name":"用户甲"},
+  "device": {"id":"dev_...","name":"甲的浏览器"}
 }
 ```
 
@@ -76,12 +133,12 @@ Authorization: Bearer dev_...
 
 - `200` snapshot envelope
 - `401` missing/revoked token
-- `404` no snapshot yet
+- `404` no snapshot
 
 ```json
 {
-  "project": "spellwell",
-  "namespace": "child-a",
+  "projectId": "proj_...",
+  "namespace": "user-...",
   "revision": 3,
   "hash": "sha256...",
   "updatedAt": "2026-11-16T15:00:00.000Z",
@@ -105,14 +162,10 @@ Content-Type: application/json
 - `409` revision conflict; includes `current`
 - `413` body over 8 MB
 
-`If-Match: "3"` is also accepted as an alternative to `baseRevision`.
+`If-Match: "3"` is accepted as an alternative to `baseRevision`.
 
 First write:
 
 ```json
 {"baseRevision":0,"snapshot":{}}
 ```
-
-## Not found
-
-Unknown routes return `404 {"error":"not_found"}`.

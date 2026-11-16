@@ -3,8 +3,16 @@
 ## Requirements
 
 - Node.js 22+
-- a writable `DATA_DIR`
-- TLS reverse proxy for any non-local deployment
+- writable `DATA_DIR`
+- TLS reverse proxy for non-local deployment
+
+## Local
+
+```bash
+DATA_DIR=./data node src/server.js
+```
+
+Read the bootstrap code from the terminal.
 
 ## Docker
 
@@ -12,12 +20,31 @@ Production only. Local development does not require Docker.
 
 ```bash
 docker compose up --build
-docker compose exec sync node src/cli.js user-create \
-  --project spellwell --name "Child A" --namespace child-a
+docker compose logs -f sync
 ```
 
-The image is Node 24 Alpine, runs as a non-root user, uses a read-only root filesystem,
-and stores data in the `sync-data` volume.
+Read the bootstrap code from the logs, then call `/v1/enroll`.
+
+The image is Node 24 Alpine, runs as a non-root user, uses a read-only root
+filesystem, and stores data in the `sync-data` volume.
+
+## Bootstrap code rotation
+
+- printed at process start;
+- one use;
+- after a successful project creation, the code is rotated and the new code is
+  printed;
+- restarting the process also generates a new code;
+- old codes are invalid immediately.
+
+If the code is lost:
+
+```bash
+docker compose restart sync
+docker compose logs sync | grep -A2 'project creation code'
+```
+
+Existing projects, users, devices, and tokens are unaffected.
 
 ## Backup
 
@@ -28,15 +55,15 @@ auth.json
 projects/
 ```
 
-SQLite is not used. Snapshot writes are atomic, but backup consistency across files is
-the operator's responsibility. Stop the service or copy the directory during a quiet
-period for a simple full backup.
+Snapshot and auth writes are atomic, but cross-file consistency is the operator's
+responsibility. Stop the service or copy during a quiet period for a simple full
+backup.
 
 ## Reverse proxy
 
 Terminate TLS at Caddy/Traefik and proxy to port `8787`.
 
-If the browser runs on a different origin, set:
+If the browser runs on a different origin:
 
 ```text
 CORS_ORIGIN=https://spellwell.example.com
@@ -50,5 +77,5 @@ GET /health
 
 ## Single-instance warning
 
-Auth and snapshot locks are in-process. Do not run multiple containers against the same
-`DATA_DIR`; there is no distributed lock in v1.
+Auth and snapshot locks are in-process. Do not run multiple containers against the
+same `DATA_DIR`; there is no distributed lock in v1.

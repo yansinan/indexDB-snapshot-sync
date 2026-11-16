@@ -3,52 +3,75 @@
 ## Position
 
 `indexDB-snapshot-sync` is a self-hosted sync service for small IndexedDB apps.
-It does not run application scheduling, judging, or business rules.
+It does not run scheduling, judging, or business rules.
 
 ```text
 Browser A                              Browser B
 existing IndexedDB                     existing IndexedDB
         │                                     │
-        └──── snapshot sync client ───────────┘
+        └──── enroll / sync client ───────────┘
                          │ HTTPS
                          ▼
               snapshot sync service
-              users / pairing / devices
-              JSON file snapshots
+              users / devices / pairing
+              runtime bootstrap code
                          │
                     DATA_DIR volume
 ```
 
-## Components
-
-| Component | File | Responsibility |
-|---|---|---|
-| HTTP API | `src/server.js` | routes, auth middleware, request limits |
-| Auth store | `src/auth-store.js` | users, one-time pairing codes, device tokens |
-| Snapshot store | `src/store.js` | revisioned JSON snapshots, atomic writes |
-| Token helpers | `src/auth.js` | hashing, bearer parsing |
-| Admin CLI | `src/cli.js` | create users, pair codes, list/revoke devices |
-
-## Sync model
-
-The browser remains responsible for its data model and scheduling. The server stores
-one opaque JSON snapshot per `project + user namespace`.
+## Public API
 
 ```text
-GET  /v1/snapshots   → {revision, hash, updatedAt, snapshot}
-PUT  /v1/snapshots   → baseRevision + snapshot
+GET  /health
+POST /v1/enroll
+POST /v1/pairing-codes
+GET  /v1/me
+GET  /v1/snapshots
+PUT  /v1/snapshots
 ```
 
-The client should:
+## Enrollment model
 
-1. export its local DB;
-2. fetch the remote snapshot;
-3. merge locally (application-specific);
-4. import the merged snapshot;
-5. PUT with the remote revision (or `If-Match`);
-6. on 409, fetch again and retry with a bounded number of attempts.
+`POST /v1/enroll` accepts exactly one credential:
 
-The server does not merge data and does not inspect snapshot fields.
+| Credential | Result |
+|---|---|
+| `bootstrapCode` | new project + first user + device token |
+| `projectId` | new user in existing project + device token |
+| `pairingCode` | new device for an existing user |
+
+The result is always:
+
+```json
+{"projectId":"proj_...","deviceToken":"dev_...","user":{},"device":{}}
+```
+
+## Project identity
+
+A project has no separate record. A project exists while at least one user has its
+`projectId`.
+
+```text
+users
+  projectId
+  userId
+  namespace
+```
+
+The first enrollment generates a 128-bit `proj_...` ID server-side. Future users
+join by presenting that projectId. The client never chooses a project ID.
+
+## Bootstrap code
+
+- generated once when the Node process starts;
+- printed to stdout/stderr;
+- held only in memory as a SHA-256 hash;
+- one use;
+- after successful project creation it is rotated and the new code is printed;
+- restart generates a new code and invalidates the old one;
+- no bootstrap-code API.
+
+If the code is lost, restart the service and read the new code from the logs.
 
 ## Storage
 
@@ -56,28 +79,25 @@ The server does not merge data and does not inspect snapshot fields.
 DATA_DIR/
   auth.json
   projects/
-    <project>/
+    <projectId>/
       <namespace>/
         snapshot.json
 ```
 
-All writes use a temporary file, `fsync`, then `rename`. Auth mutations are serialized
-inside one Node process. This is a single-instance design; do not run multiple replicas
-against the same `DATA_DIR`.
+Auth writes and snapshot writes use temp file + `fsync` + `rename`. Auth mutations
+are serialized in one Node process.
 
 ## Auth boundary
 
-- pairing code is public only at `POST /v1/auth/pair`;
-- all snapshot and identity routes require a device bearer token;
-- device project/namespace are resolved from the token, never from client-supplied
-  URL parameters;
-- the server never returns another user's namespace.
-
-See [AUTH.md](AUTH.md).
+- bootstrap code only permits creation of a new project;
+- projectId permits creation of a new user in that project;
+- pairing code only joins an existing user;
+- device token scopes all snapshot reads/writes;
+- scoping comes from the token, never from client-supplied user/namespace IDs.
 
 ## Non-goals
 
-- server-side scheduling or question generation;
+- server-side scheduling;
 - real-time collaborative editing;
 - large blobs;
 - enterprise multi-tenant auth;

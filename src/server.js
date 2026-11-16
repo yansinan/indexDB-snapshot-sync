@@ -1,18 +1,21 @@
 /**
  * indexDB-snapshot-sync.
- * Browser clients keep IndexedDB; the server stores opaque snapshots and
- * authenticates each browser/device through a pairing-issued device token.
+ *
+ * Public client entry: POST /v1/enroll with exactly one of
+ * bootstrapCode, projectId, or pairingCode. The result is a device token
+ * bound to a user/project. Snapshot routes only require that device token.
  */
 
 import { createServer } from 'node:http';
 import { bearerToken } from './auth.js';
 import { AuthError, AuthStore } from './auth-store.js';
+import { BootstrapCode, generateBootstrapCode } from './bootstrap-code.js';
 import { SnapshotConflictError, SnapshotStore } from './store.js';
 
 const MAX_BODY = 8 * 1024 * 1024;
-const MAX_PAIR_BODY = 16 * 1024;
-const PAIR_WINDOW_MS = 60_000;
-const PAIR_MAX_ATTEMPTS = 20;
+const MAX_ENROLL_BODY = 32 * 1024;
+const ENROLL_WINDOW_MS = 60_000;
+const ENROLL_MAX_ATTEMPTS = 30;
 
 function sendJson(response, status, body, extra = {}) {
   const payload = JSON.stringify(body);
@@ -51,23 +54,42 @@ function parseJson(text) {
   }
 }
 
+function enrollmentResponse(result) {
+  return {
+    projectId: result.projectId,
+    deviceToken: result.token,
+    user: { id: result.user.id, name: result.user.name },
+    device: { id: result.device.id, name: result.device.name },
+  };
+}
+
 /**
- * @param {{dataDir: string, corsOrigin?: string}} options
+ * @param {{
+ *   dataDir: string,
+ *   corsOrigin?: string,
+ *   bootstrapCode?: BootstrapCode,
+ *   onBootstrapCode?: ((code: string) => void)|null
+ * }} options
  */
-export function createSnapshotServer({ dataDir, corsOrigin = '' }) {
+export function createSnapshotServer({
+  dataDir,
+  corsOrigin = '',
+  bootstrapCode = new BootstrapCode(),
+  onBootstrapCode = null,
+}) {
   const authStore = new AuthStore(dataDir);
   const snapshots = new SnapshotStore(dataDir);
-  const pairAttempts = new Map();
+  const enrollAttempts = new Map();
 
-  const allowPairAttempt = (request) => {
+  const allowEnrollAttempt = (request) => {
     const ip = request.socket.remoteAddress ?? 'unknown';
     const now = Date.now();
-    const record = pairAttempts.get(ip);
+    const record = enrollAttempts.get(ip);
     if (!record || record.resetAt <= now) {
-      pairAttempts.set(ip, { count: 1, resetAt: now + PAIR_WINDOW_MS });
+      enrollAttempts.set(ip, { count: 1, resetAt: now + ENROLL_WINDOW_MS });
       return true;
     }
-    if (record.count >= PAIR_MAX_ATTEMPTS) return false;
+    if (record.count >= ENROLL_MAX_ATTEMPTS) return false;
     record.count += 1;
     return true;
   };
@@ -106,9 +128,10 @@ export function createSnapshotServer({ dataDir, corsOrigin = '' }) {
       if (request.method === 'GET' && url.pathname === '/') {
         sendJson(response, 200, {
           name: 'indexDB-snapshot-sync',
-          auth: 'pairing-code + device-token',
+          enroll: ['bootstrapCode', 'projectId', 'pairingCode'],
           endpoints: [
-            'POST /v1/auth/pair',
+            'POST /v1/enroll',
+            'POST /v1/pairing-codes',
             'GET /v1/me',
             'GET/PUT /v1/snapshots',
             'GET /health',
@@ -117,24 +140,56 @@ export function createSnapshotServer({ dataDir, corsOrigin = '' }) {
         return;
       }
 
-      if (request.method === 'POST' && url.pathname === '/v1/auth/pair') {
-        if (!allowPairAttempt(request)) {
+      if (request.method === 'POST' && url.pathname === '/v1/enroll') {
+        if (!allowEnrollAttempt(request)) {
           sendJson(response, 429, { error: 'too_many_attempts' });
           return;
         }
-        const body = parseJson(await readBody(request, MAX_PAIR_BODY));
+        const body = parseJson(await readBody(request, MAX_ENROLL_BODY));
+        const modes = ['bootstrapCode', 'projectId', 'pairingCode']
+          .filter((key) => typeof body?.[key] === 'string' && body[key].trim().length > 0);
+        if (modes.length !== 1) {
+          sendJson(response, 400, {
+            error: 'invalid_enrollment',
+            message: 'exactly one of bootstrapCode, projectId, or pairingCode is required',
+          });
+          return;
+        }
+
+        if (modes[0] === 'bootstrapCode') {
+          if (!bootstrapCode.verify(body.bootstrapCode)) {
+            sendJson(response, 401, { error: 'invalid_bootstrap_code' });
+            return;
+          }
+          const result = await authStore.bootstrapProject({
+            userName: body.userName,
+            deviceName: body.deviceName,
+          });
+          const nextCode = bootstrapCode.rotate();
+          try {
+            onBootstrapCode?.(nextCode);
+          } catch (error) {
+            console.error('[bootstrap] failed to emit rotated code', error);
+          }
+          sendJson(response, 201, enrollmentResponse(result));
+          return;
+        }
+
+        if (modes[0] === 'projectId') {
+          const result = await authStore.createUserInProject({
+            projectId: body.projectId,
+            userName: body.userName,
+            deviceName: body.deviceName,
+          });
+          sendJson(response, 201, enrollmentResponse(result));
+          return;
+        }
+
         const result = await authStore.pairDevice({
-          code: body?.code,
-          deviceName: body?.deviceName,
+          code: body.pairingCode,
+          deviceName: body.deviceName,
         });
-        sendJson(response, 201, {
-          deviceId: result.device.id,
-          token: result.token,
-          deviceName: result.device.name,
-          project: result.device.project,
-          namespace: result.user.namespace,
-          user: { id: result.user.id, name: result.user.name },
-        });
+        sendJson(response, 201, enrollmentResponse(result));
         return;
       }
 
@@ -144,9 +199,26 @@ export function createSnapshotServer({ dataDir, corsOrigin = '' }) {
         return;
       }
 
+      if (request.method === 'POST' && url.pathname === '/v1/pairing-codes') {
+        const text = await readBody(request, MAX_ENROLL_BODY);
+        const body = text.length > 0 ? parseJson(text) : {};
+        const ttlSeconds = body?.ttlSeconds === undefined ? 600 : Number(body.ttlSeconds);
+        if (!Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 86_400) {
+          sendJson(response, 400, { error: 'invalid_ttl' });
+          return;
+        }
+        const result = await authStore.createPairingCode({
+          projectId: session.device.projectId,
+          userId: session.user.id,
+          ttlMs: ttlSeconds * 1000,
+        });
+        sendJson(response, 201, result);
+        return;
+      }
+
       if (request.method === 'GET' && url.pathname === '/v1/me') {
         sendJson(response, 200, {
-          project: session.device.project,
+          projectId: session.device.projectId,
           namespace: session.user.namespace,
           user: { id: session.user.id, name: session.user.name },
           device: { id: session.device.id, name: session.device.name },
@@ -160,7 +232,7 @@ export function createSnapshotServer({ dataDir, corsOrigin = '' }) {
       }
 
       if (request.method === 'GET') {
-        const snapshot = await snapshots.load(session.device.project, session.user.namespace);
+        const snapshot = await snapshots.load(session.device.projectId, session.user.namespace);
         if (!snapshot) {
           sendJson(response, 404, { error: 'snapshot_not_found' });
           return;
@@ -187,7 +259,7 @@ export function createSnapshotServer({ dataDir, corsOrigin = '' }) {
         }
         try {
           const saved = await snapshots.save(
-            session.device.project,
+            session.device.projectId,
             session.user.namespace,
             baseRevision,
             body.snapshot,
@@ -230,10 +302,22 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const host = process.env.HOST ?? '0.0.0.0';
   const dataDir = process.env.DATA_DIR ?? './data';
   const corsOrigin = process.env.CORS_ORIGIN ?? '';
-  const server = createSnapshotServer({ dataDir, corsOrigin });
+  const initialCode = generateBootstrapCode();
+  const bootstrapCode = new BootstrapCode(initialCode);
+  const printBootstrap = (code) => {
+    console.log('[bootstrap] project creation code:');
+    console.log(`[bootstrap] ${code}`);
+    console.log('[bootstrap] one use; a new code is emitted after successful enrollment');
+  };
+  printBootstrap(initialCode);
+  const server = createSnapshotServer({
+    dataDir,
+    corsOrigin,
+    bootstrapCode,
+    onBootstrapCode: printBootstrap,
+  });
   server.listen(port, host, () => {
     console.log(`indexDB-snapshot-sync → http://${host}:${port}`);
     console.log(`storage → ${dataDir}`);
-    console.log('Create users/pairing codes with: node src/cli.js help');
   });
 }

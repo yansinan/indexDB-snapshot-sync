@@ -14,9 +14,6 @@ Read this before changing the service.
 ```bash
 node --test
 DATA_DIR=./data node src/server.js
-node src/cli.js help
-node src/cli.js user-create --project spellwell --name "Child A"
-node src/cli.js pair --project spellwell --user usr_...
 ```
 
 Do not run Docker for local development. The Dockerfile is production packaging only.
@@ -24,59 +21,86 @@ Do not run Docker for local development. The Dockerfile is production packaging 
 ## File map
 
 ```text
-src/server.js       HTTP routes, CORS, limits, auth middleware
-src/auth-store.js   users, pairing codes, devices, revocation
-src/auth.js         hashing, bearer parsing
-src/store.js        snapshot files, revisions, atomic writes
-src/cli.js          local admin CLI
-test/               node:test suites
-docs/               handoff and operations documentation
+src/server.js         six routes, CORS, limits, enrollment and auth middleware
+src/auth-store.js     users, devices, pairing codes, project bootstrap
+src/bootstrap-code.js runtime one-time bootstrap code and rotation
+src/auth.js           hashing and bearer parsing
+src/store.js          snapshot files, revisions, atomic writes
+test/                 node:test suites
+docs/                 handoff and operations documentation
+```
+
+## Public endpoints
+
+```text
+GET  /health
+POST /v1/enroll
+POST /v1/pairing-codes
+GET  /v1/me
+GET  /v1/snapshots
+PUT  /v1/snapshots
+```
+
+`POST /v1/enroll` accepts exactly one of:
+
+```text
+bootstrapCode  -> new project + first user
+projectId      -> new user in existing project
+pairingCode    -> new device for existing user
 ```
 
 ## Invariants
 
-1. Never accept `userId`, `project`, or `namespace` from the client for authorization.
-   Resolve them from the device token.
-2. Never store plaintext pairing codes or device tokens.
-3. Pairing codes are one-time and expiring.
-4. Snapshot writes must be atomic: temp file + fsync + rename.
-5. Snapshot revision check must remain; a stale `baseRevision` returns `409`.
-6. The server does not inspect or merge snapshot contents.
-7. The token must never be included in the snapshot payload.
-8. All auth and snapshot mutations are serialized in one process. Do not claim
-   multi-instance safety without adding a real distributed lock.
-9. No new runtime dependency without an explicit architecture decision.
-10. Node is the server language. A Go static binary would require a deliberate rewrite.
+1. Exactly one enrollment credential per request.
+2. Never accept `userId`, `namespace`, or project scope from the client for
+   snapshot authorization; derive it from the device token.
+3. Never store plaintext pairing codes, device tokens, or bootstrap codes.
+4. Bootstrap code is one-use, in-memory, and must rotate after successful project
+   creation. Print the new code.
+5. Pairing codes are one-use, expiring, and only join an existing user.
+6. Every device of a user can generate pairing codes; all are equal.
+7. Project IDs are generated server-side. There is no project table; project
+   existence is derived from users.
+8. Snapshot writes must be atomic: temp file + fsync + rename.
+9. A stale `baseRevision` returns `409`.
+10. The server does not inspect or merge snapshot contents.
+11. Never put a device token into the snapshot payload.
+12. Single process only in v1; do not claim multi-instance safety.
+13. Node is the server language. A Go static binary would require a deliberate rewrite.
+14. No admin token/CLI in the public path. The bootstrap code is the project
+    creation gate.
 
-## Adding an endpoint
+## Error behavior
 
-1. Add the route in `src/server.js`.
-2. Decide whether it is public or requires `authenticate(request)`.
-3. Resolve scope from the session, not from client-provided IDs.
-4. Add a test under `test/`.
-5. Update `docs/API.md` and, if behavior changes, `docs/AUTH.md`.
+- invalid bootstrap code -> `401`
+- invalid/used pairing code -> `400`
+- missing project for projectId enrollment -> `404`
+- missing/revoked device token -> `401`
+- stale snapshot revision -> `409`
+- too many enrollment attempts -> `429`
 
 ## Known limitations
 
-- No browser SDK yet.
-- No merge helper; client must merge snapshots.
-- One device token is long-lived until revoked.
-- Pairing rate limit is in-memory.
+- No browser SDK or merge helper yet.
+- No device revocation HTTP API; `AuthStore.revokeDevice()` exists for operations/tests.
+- Bootstrap code response-loss edge case.
+- Pairing/enrollment rate limits are in-memory.
 - No snapshot history/retention.
-- No admin HTTP API; use the CLI.
 - Single instance only.
 - Docker is not tested in the local environment.
 
 ## Next work
 
-1. Add a tiny browser sync client:
-   `pair(code) → store token → exportAll/pull/merge/importAll/push`.
-2. Add `PUT /v1/snapshots` idempotency by hash.
-3. Add optional snapshot history/retention.
-4. Add HttpOnly cookie mode if same-origin deployment becomes the default.
-5. Add a production Docker smoke test outside local development.
+1. Browser SDK:
+   `enroll() → store deviceToken → exportAll/pull/merge/importAll/push`.
+2. Idempotency for bootstrap enrollment.
+3. Snapshot history/retention.
+4. Device revocation API with separate auth.
+5. Optional HttpOnly cookie mode.
+6. Production Docker smoke test.
 
-## Migration note
+## Migration from the previous shared token model
 
-The old shared `SYNC_TOKEN` is intentionally gone. If an old snapshot lives in the
-`default` namespace, create the user with `--namespace default`, then pair each browser.
+The old `SYNC_TOKEN`, `/v1/auth/pair`, and CLI-managed users are gone from the
+public path. Create a project with the startup bootstrap code, then create additional
+users with the returned `projectId`.

@@ -62,7 +62,7 @@ export class SnapshotStore {
       if (!Number.isInteger(parsed?.revision) || parsed.revision < 1 || !parsed.snapshot) {
         throw new Error('invalid snapshot file');
       }
-      return parsed;
+      return { ...parsed, projectId: parsed.projectId ?? parsed.project };
     } catch (error) {
       if (error && error.code === 'ENOENT') return null;
       throw error;
@@ -86,7 +86,7 @@ export class SnapshotStore {
       const compact = JSON.stringify(snapshot);
       const revision = currentRevision + 1;
       const envelope = {
-        project,
+        projectId: project,
         namespace,
         revision,
         hash: createHash('sha256').update(compact, 'utf8').digest('hex'),

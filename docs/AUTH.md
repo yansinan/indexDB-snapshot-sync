@@ -1,149 +1,176 @@
 # Authentication
 
-## Model
+## Three credentials
 
 ```text
-user (project-scoped)
-  └─ namespace  (the user's snapshot partition)
-       └─ device token  (one per browser/device)
+bootstrapCode
+  → create a new project
+
+projectId
+  → create a new user inside an existing project
+
+pairingCode
+  → add a device to an existing user
 ```
 
-A browser proves it is a valid client with a **device token**. The token also tells
-the server which user and namespace it belongs to.
-
-## Pairing flow
+All three are exchangeable at `POST /v1/enroll` for a **deviceToken**.
 
 ```text
-admin CLI
-  node src/cli.js pair --project spellwell --user usr_...
-        │ one-time code, 10 min by default
-        ▼
-browser
-  POST /v1/auth/pair {code, deviceName}
-        │
-        ▼
-server
-  mark code used
-  create device
-  return deviceId + token (shown once)
-        │
-        ▼
-browser stores token outside the synced snapshot
+deviceToken
+  → identifies device + user + project + namespace
 ```
 
-### Create a user
+## 1. Bootstrap code
 
-```bash
-node src/cli.js user-create \
-  --project spellwell \
-  --name "Child A" \
-  --namespace child-a
+Created when the server starts:
+
+```text
+[bootstrap] project creation code:
+[bootstrap] BOOT-...
 ```
 
-`namespace` is optional. If omitted, a random `user-xxxxxxxx` namespace is assigned.
+- 128-bit random value;
+- only its SHA-256 hash is kept in memory;
+- no database and no API to retrieve it;
+- one use;
+- valid until used or process restart;
+- after successful project creation it is rotated and the new code is printed.
 
-### Create a pairing code
-
-```bash
-node src/cli.js pair \
-  --project spellwell \
-  --user usr_... \
-  --ttl 10m
-```
-
-Codes:
-
-- 8 characters, formatted `XXXX-XXXX`;
-- one-time;
-- 10 minutes by default;
-- only their SHA-256 hash is stored;
-- failed attempts are rate-limited in memory per IP.
-
-### Exchange the code
+Request:
 
 ```http
-POST /v1/auth/pair
+POST /v1/enroll
 Content-Type: application/json
 
-{"code":"ABCD-EFGH","deviceName":"Child A browser"}
+{
+  "bootstrapCode": "BOOT-...",
+  "userName": "用户甲",
+  "deviceName": "甲的浏览器"
+}
+```
+
+Success creates:
+
+```text
+projectId (server-generated)
+user 甲
+device 1
+deviceToken
+```
+
+The old bootstrap code is invalid after success.
+
+### Lost bootstrap code
+
+```bash
+docker compose restart sync
+docker compose logs sync | grep -A2 'project creation code'
+```
+
+Existing projects, users, and device tokens are not affected.
+
+## 2. Project ID
+
+A project is not a table; it exists while one or more users reference its
+`projectId`.
+
+```http
+POST /v1/enroll
+Content-Type: application/json
+
+{
+  "projectId": "proj_...",
+  "userName": "用户乙",
+  "deviceName": "乙的浏览器"
+}
+```
+
+- projectId is a server-generated, unguessable join capability;
+- anyone who knows it can create a **new user** in that project;
+- it cannot read an existing user's data;
+- it cannot join an existing user (that requires a pairing code).
+
+## 3. Pairing code
+
+Any enrolled device can generate a code for its own user:
+
+```http
+POST /v1/pairing-codes
+Authorization: Bearer dev_...
+Content-Type: application/json
+
+{"ttlSeconds":600}
 ```
 
 Response:
 
 ```json
+{"code":"ABCD-EFGH","expiresAt":"..."}
+```
+
+A new browser exchanges it:
+
+```http
+POST /v1/enroll
+Content-Type: application/json
+
+{"pairingCode":"ABCD-EFGH","deviceName":"甲的 iPad"}
+```
+
+The new device receives:
+
+```json
 {
-  "deviceId": "dev_...",
-  "token": "dev_...",
-  "deviceName": "Child A browser",
-  "project": "spellwell",
-  "namespace": "child-a",
-  "user": {"id":"usr_...","name":"Child A"}
+  "projectId": "proj_...",
+  "deviceToken": "dev_...",
+  "user": {"id":"usr_甲","name":"用户甲"},
+  "device": {"id":"dev_...","name":"甲的 iPad"}
 }
 ```
 
-The `token` is returned once. The server stores only its SHA-256 hash.
+Pairing codes:
 
-## Using the device token
+- one-time;
+- short TTL;
+- only hashed at rest;
+- only join an existing user;
+- never create a new user or project.
 
-```http
-Authorization: Bearer dev_...
-```
-
-The server resolves:
-
-```text
-device.tokenHash
-  → device
-  → user
-  → project + namespace
-```
-
-Client-supplied `userId`, `namespace`, or `project` must not be trusted for
-authorization. Current API derives all three from the token.
+Every device of the user has equal ability to generate pairing codes.
 
 ## Browser storage
 
-Store the token in a non-synced local location, for example:
+Store only local, non-synced values:
 
 ```text
-IndexedDB meta.sync.deviceToken
-IndexedDB meta.sync.deviceId
+meta.sync.projectId
+meta.sync.deviceId
+meta.sync.deviceToken
 ```
 
-Never put the token inside the snapshot passed to `PUT /v1/snapshots`; it would be
-copied to other devices by design.
+Never put `deviceToken` inside the snapshot payload. It must not be synchronized to
+other devices.
 
 ## Revocation
 
-```bash
-node src/cli.js devices --project spellwell
-node src/cli.js revoke --device dev_...
-```
+There is no admin HTTP endpoint in v1. A directly accessible Node CLI is not part of
+the public API. Device revocation is a future admin operation; for now the file-backed
+store supports `AuthStore.revokeDevice()` for tests/operations.
 
-Revocation sets `revokedAt`; all later requests with that token return `401`.
-Other devices are unaffected.
+When adding a revocation API later, it must be separately authenticated and must not
+use the device token of the device being revoked.
 
 ## Security notes
 
-- TLS is expected to be terminated by a reverse proxy (Caddy/Traefik).
-- Device tokens are long-lived in v1; rotate by pairing a new device and revoking the old one.
-- A token stored in JavaScript is exposed to XSS. For stronger browser security, move
-  to HttpOnly cookies + same-origin deployment later.
-- Pairing codes are short-lived and one-time, but rate limiting is in-memory and resets
-  on restart.
-- No passwords, JWT, OAuth server, or user database are required in v1.
+- TLS is expected to be terminated by a reverse proxy.
+- Device tokens are long-lived until revoked.
+- A token in JavaScript is exposed to XSS; HttpOnly cookie mode is a later option.
+- Bootstrap codes are printed in server logs: protect log access.
+- Pairing and enrollment attempts are rate-limited in memory; limits reset on restart.
+- No passwords, JWT, OAuth server, or admin token are required in v1.
 
-## Migration from the old shared `SYNC_TOKEN`
+## Lost-response edge case
 
-The old shared token is removed from the sync path. To keep an existing snapshot that
-was stored under `default`:
-
-```bash
-node src/cli.js user-create \
-  --project spellwell \
-  --name "Child A" \
-  --namespace default
-node src/cli.js pair --project spellwell --user usr_...
-```
-
-Then pair each browser and remove `SYNC_TOKEN` from the deployment environment.
+If project creation succeeds but the HTTP response is lost, the bootstrap code has
+already rotated and the client did not receive the device token. v1 accepts this
+small failure window; a future idempotency key can close it.

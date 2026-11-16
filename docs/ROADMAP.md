@@ -2,28 +2,29 @@
 
 ## Done
 
-- [x] file-backed users
-- [x] one-time pairing codes
+- [x] one-time runtime bootstrap code
+- [x] server-generated project IDs, no project table
+- [x] `POST /v1/enroll` with bootstrap/project/pairing modes
+- [x] device-generated one-time pairing codes
 - [x] per-device opaque tokens
-- [x] device revocation
+- [x] device revocation primitive
 - [x] revision-checked JSON snapshots
 - [x] atomic snapshot writes
-- [x] admin CLI
 - [x] Node Alpine production Dockerfile
 
 ## Next
 
-- [ ] browser sync SDK (pair, token storage, export/import, retry)
+- [ ] browser sync SDK (enroll, token storage, export/import, retry)
 - [ ] snapshot merge helper for IndexedDB stores
-- [ ] hash-based no-op/idempotent PUT
-- [ ] snapshot history and pruning
+- [ ] bootstrap enrollment idempotency
+- [ ] snapshot history/pruning
+- [ ] device revocation HTTP API with separate auth
 - [ ] optional HttpOnly cookie mode
-- [ ] rate-limit persistence
 - [ ] production Docker smoke test
 
 ## Later
 
 - [ ] multi-instance storage backend
-- [ ] admin HTTP API
-- [ ] WebSocket/SSE "remote changed" signal
-- [ ] per-project quotas and metrics
+- [ ] admin API
+- [ ] WebSocket/SSE remote-change signal
+- [ ] per-project quotas/metrics

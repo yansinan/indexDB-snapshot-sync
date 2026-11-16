@@ -2,10 +2,10 @@
  * File-backed identity store.
  *
  * users + one-time pairing codes + devices.
- * No database; the dataset is small and the service is single-instance.
+ * No project table: a project exists while it has at least one user.
  */
 
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -30,7 +30,7 @@ function normalizeCode(value) {
   return String(value ?? '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
 }
 
-function randomCode() {
+function randomPairingCode() {
   let out = '';
   for (let index = 0; index < 8; index += 1) {
     out += CODE_ALPHABET[randomBytes(1)[0] % CODE_ALPHABET.length];
@@ -38,8 +38,12 @@ function randomCode() {
   return `${out.slice(0, 4)}-${out.slice(4)}`;
 }
 
-function randomToken() {
+function randomDeviceToken() {
   return `dev_${randomBytes(32).toString('base64url')}`;
+}
+
+function randomProjectId() {
+  return `proj_${randomBytes(16).toString('base64url')}`;
 }
 
 function safeName(value, label) {
@@ -49,7 +53,8 @@ function safeName(value, label) {
   return value;
 }
 
-function safeText(value, label, max = 80) {
+function safeText(value, label, max = 80, fallback = null) {
+  if ((value === undefined || value === null || value === '') && fallback !== null) return fallback;
   if (typeof value !== 'string' || value.trim().length === 0 || value.length > max) {
     throw new AuthError('invalid_text', 400, `${label} is required (max ${max})`);
   }
@@ -59,6 +64,12 @@ function safeText(value, label, max = 80) {
 /** @param {string} value */
 export function pairingCodeHash(value) {
   return hash(normalizeCode(value));
+}
+
+function sameHash(a, b) {
+  const left = Buffer.from(String(a), 'hex');
+  const right = Buffer.from(String(b), 'hex');
+  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 export class AuthStore {
@@ -82,11 +93,12 @@ export class AuthStore {
   async load() {
     try {
       const parsed = JSON.parse(await readFile(this.file, 'utf8'));
+      const normalize = (item) => ({ ...item, projectId: item.projectId ?? item.project });
       return {
         version: 1,
-        users: Array.isArray(parsed.users) ? parsed.users : [],
-        pairingCodes: Array.isArray(parsed.pairingCodes) ? parsed.pairingCodes : [],
-        devices: Array.isArray(parsed.devices) ? parsed.devices : [],
+        users: Array.isArray(parsed.users) ? parsed.users.map(normalize) : [],
+        pairingCodes: Array.isArray(parsed.pairingCodes) ? parsed.pairingCodes.map(normalize) : [],
+        devices: Array.isArray(parsed.devices) ? parsed.devices.map(normalize) : [],
       };
     } catch (error) {
       if (error && error.code === 'ENOENT') {
@@ -115,55 +127,98 @@ export class AuthStore {
     }
   }
 
-  async createUser({ project, name, namespace }) {
-    safeName(project, 'project');
-    const userName = safeText(name, 'name');
+  #newProjectId(data) {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const id = randomProjectId();
+      if (!data.users.some((user) => user.projectId === id)) return id;
+    }
+    throw new AuthError('project_id_collision', 500, 'could not allocate project id');
+  }
+
+  #addUserAndDevice(data, { projectId, userName, deviceName, namespace }) {
+    const name = safeText(userName, 'userName', 80, 'User');
+    const deviceLabel = safeText(deviceName, 'deviceName', 80, 'Browser');
+    if (data.users.some((user) => user.projectId === projectId && user.name === name)) {
+      throw new AuthError('user_exists', 409, 'user name already exists in project');
+    }
+    const id = `usr_${randomUUID()}`;
+    const ns = namespace === undefined || namespace === ''
+      ? `user-${id.slice(4, 12)}`
+      : safeName(namespace, 'namespace');
+    if (data.users.some((user) => user.projectId === projectId && user.namespace === ns)) {
+      throw new AuthError('namespace_exists', 409, 'namespace already exists in project');
+    }
+    const user = { id, projectId, name, namespace: ns, createdAt: new Date().toISOString() };
+    const token = randomDeviceToken();
+    const device = {
+      id: `dev_${randomUUID()}`,
+      projectId,
+      userId: id,
+      name: deviceLabel,
+      tokenHash: hash(token),
+      createdAt: new Date().toISOString(),
+      lastSeenAt: null,
+      revokedAt: null,
+    };
+    data.users.push(user);
+    data.devices.push(device);
+    return { user, device, token };
+  }
+
+  /**
+   * Create a new project and its first user/device.
+   * A project is not a separate record; it exists while it has users.
+   */
+  async bootstrapProject({ userName, deviceName } = {}) {
     return this.#withLock(async () => {
       const data = await this.load();
-      const id = `usr_${randomUUID()}`;
-      const ns = namespace === undefined || namespace === ''
-        ? `user-${id.slice(4, 12)}`
-        : safeName(namespace, 'namespace');
-      if (data.users.some((user) => user.project === project && user.namespace === ns)) {
-        throw new AuthError('namespace_exists', 409, 'namespace already exists in project');
-      }
-      if (data.users.some((user) => user.project === project && user.name === userName)) {
-        throw new AuthError('user_exists', 409, 'user name already exists in project');
-      }
-      const user = { id, project, name: userName, namespace: ns, createdAt: new Date().toISOString() };
-      data.users.push(user);
+      const projectId = this.#newProjectId(data);
+      const created = this.#addUserAndDevice(data, { projectId, userName, deviceName });
       await this.#save(data);
-      return user;
+      return { projectId, ...created };
     });
   }
 
-  async listUsers(project) {
-    safeName(project, 'project');
-    const data = await this.load();
-    return data.users.filter((user) => user.project === project);
+  /** Create another user inside an existing project. */
+  async createUserInProject({ projectId, userName, deviceName } = {}) {
+    safeName(projectId, 'projectId');
+    return this.#withLock(async () => {
+      const data = await this.load();
+      if (!data.users.some((user) => user.projectId === projectId)) {
+        throw new AuthError('project_not_found', 404, 'project not found');
+      }
+      const created = this.#addUserAndDevice(data, { projectId, userName, deviceName });
+      await this.#save(data);
+      return { projectId, ...created };
+    });
   }
 
-  async createPairingCode({ project, userId, ttlMs = DEFAULT_TTL_MS }) {
-    safeName(project, 'project');
+  async listUsers(projectId) {
+    safeName(projectId, 'projectId');
+    const data = await this.load();
+    return data.users.filter((user) => user.projectId === projectId);
+  }
+
+  async createPairingCode({ projectId, userId, ttlMs = DEFAULT_TTL_MS }) {
+    safeName(projectId, 'projectId');
     if (!Number.isFinite(ttlMs) || ttlMs < 60_000 || ttlMs > 24 * 60 * 60 * 1000) {
       throw new AuthError('invalid_ttl', 400, 'ttl must be between 1 minute and 24 hours');
     }
     return this.#withLock(async () => {
       const data = await this.load();
-      const user = data.users.find((item) => item.id === userId && item.project === project);
+      const user = data.users.find((item) => item.id === userId && item.projectId === projectId);
       if (!user) throw new AuthError('user_not_found', 404, 'user not found');
-      const code = randomCode();
+      const code = randomPairingCode();
       const now = Date.now();
       const record = {
         id: `pair_${randomUUID()}`,
         codeHash: pairingCodeHash(code),
-        project,
+        projectId,
         userId,
         expiresAt: new Date(now + ttlMs).toISOString(),
         usedAt: null,
         createdAt: new Date(now).toISOString(),
       };
-      // Keep the file small: drop expired, unused codes.
       data.pairingCodes = data.pairingCodes
         .filter((item) => item.usedAt !== null || Date.parse(item.expiresAt) > now)
         .concat(record);
@@ -177,23 +232,25 @@ export class AuthStore {
     if (normalized.length !== 8) {
       throw new AuthError('invalid_pairing_code', 400, 'invalid pairing code');
     }
-    const name = safeText(deviceName, 'deviceName');
+    const name = safeText(deviceName, 'deviceName', 80, 'Browser');
     return this.#withLock(async () => {
       const data = await this.load();
       const now = Date.now();
       const codeHash = pairingCodeHash(normalized);
-      const pairing = data.pairingCodes.find((item) => item.codeHash === codeHash && item.usedAt === null);
+      const pairing = data.pairingCodes.find((item) => sameHash(item.codeHash, codeHash) && item.usedAt === null);
       if (!pairing) throw new AuthError('invalid_pairing_code', 400, 'invalid or used pairing code');
       if (Date.parse(pairing.expiresAt) <= now) {
         throw new AuthError('pairing_code_expired', 400, 'pairing code expired');
       }
       pairing.usedAt = new Date(now).toISOString();
-      const user = data.users.find((item) => item.id === pairing.userId && item.project === pairing.project);
+      const user = data.users.find(
+        (item) => item.id === pairing.userId && item.projectId === pairing.projectId,
+      );
       if (!user) throw new AuthError('user_not_found', 404, 'user not found');
-      const token = randomToken();
+      const token = randomDeviceToken();
       const device = {
         id: `dev_${randomUUID()}`,
-        project: pairing.project,
+        projectId: pairing.projectId,
         userId: pairing.userId,
         name,
         tokenHash: hash(token),
@@ -203,7 +260,7 @@ export class AuthStore {
       };
       data.devices.push(device);
       await this.#save(data);
-      return { device, user, token };
+      return { projectId: pairing.projectId, user, device, token };
     });
   }
 
@@ -213,15 +270,17 @@ export class AuthStore {
     const tokenHash = hash(token);
     const device = data.devices.find((item) => item.tokenHash === tokenHash && item.revokedAt === null);
     if (!device) return null;
-    const user = data.users.find((item) => item.id === device.userId && item.project === device.project);
+    const user = data.users.find(
+      (item) => item.id === device.userId && item.projectId === device.projectId,
+    );
     return user ? { device, user } : null;
   }
 
-  async listDevices(project) {
-    safeName(project, 'project');
+  async listDevices(projectId) {
+    safeName(projectId, 'projectId');
     const data = await this.load();
     return data.devices
-      .filter((device) => device.project === project)
+      .filter((device) => device.projectId === projectId)
       .map(({ tokenHash, ...device }) => device);
   }
 
