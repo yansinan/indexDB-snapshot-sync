@@ -1,15 +1,16 @@
 {
   "name": "indexdb-snapshot-sync",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Ultra-light self-hosted snapshot sync for IndexedDB apps",
+  "description": "Ultra-light self-hosted snapshot sync with per-device authentication",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
+    "cli": "node src/cli.js",
     "test": "node --test"
   }
 }

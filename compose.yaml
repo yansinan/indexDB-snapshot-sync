@@ -4,7 +4,7 @@ services:
     environment:
       PORT: 8787
       DATA_DIR: /data
-      SYNC_TOKEN: ${SYNC_TOKEN:?set SYNC_TOKEN}
+      CORS_ORIGIN: ${CORS_ORIGIN:-}
     ports:
       - "8787:8787"
     volumes:
