@@ -45,9 +45,13 @@ export class SnapshotStore {
   async #withLock(key, fn) {
     const previous = this.locks.get(key) ?? Promise.resolve();
     const current = previous.then(fn, fn);
-    this.locks.set(key, current.finally(() => {
-      if (this.locks.get(key) === current) this.locks.delete(key);
-    }));
+    const tail = current.finally(() => {
+      if (this.locks.get(key) === tail) this.locks.delete(key);
+    });
+    // The tail exists only to serialize/cleanup; its rejection is already
+    // observed by the caller through `current`. Prevent an unhandled rejection.
+    tail.catch(() => {});
+    this.locks.set(key, tail);
     return current;
   }
 

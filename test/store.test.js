@@ -26,9 +26,13 @@ test('snapshot store: stale base revision conflicts', async () => {
   await withStore(async (store) => {
     await store.save('spellwell', 'default', 0, { value: 1 });
     await store.save('spellwell', 'default', 1, { value: 2 });
-    await assert.rejects(
-      () => store.save('spellwell', 'default', 1, { value: 3 }),
-      (error) => error instanceof SnapshotConflictError && error.current.revision === 2,
-    );
+    try {
+      await store.save('spellwell', 'default', 1, { value: 3 });
+      assert.fail('expected conflict');
+    } catch (error) {
+      assert.equal(error instanceof SnapshotConflictError, true);
+      assert.equal(error.name, 'SnapshotConflictError');
+      assert.equal(error.current.revision, 2);
+    }
   });
 });
