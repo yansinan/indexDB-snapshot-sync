@@ -12,8 +12,15 @@ Read this before changing the service.
 ## Commands
 
 ```bash
+npm start
+npm test
+```
+
+Equivalent without npm:
+
+```bash
+node src/server.js
 node --test
-DATA_DIR=./data node src/server.js
 ```
 
 Do not run Docker for local development. The Dockerfile is production packaging only.

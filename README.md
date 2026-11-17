@@ -32,10 +32,18 @@ Not implemented yet:
 - Node.js 22+
 - no npm dependencies
 
-## Local development (no Docker)
+## Start the service
 
 ```bash
-export DATA_DIR=./data
+cd /Users/Dr/Documents/deepseek-harness/snap-sync
+npm start
+```
+
+The service listens on `http://localhost:8787`.
+
+If `npm` is not on PATH, the equivalent command is:
+
+```bash
 node src/server.js
 ```
 

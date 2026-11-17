@@ -9,10 +9,11 @@
 ## Local
 
 ```bash
-DATA_DIR=./data node src/server.js
+cd /Users/Dr/Documents/deepseek-harness/snap-sync
+npm start
 ```
 
-Read the bootstrap code from the terminal.
+Read the bootstrap code from the terminal. Without npm, use `node src/server.js`.
 
 ## Docker
 
