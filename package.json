@@ -7,8 +7,13 @@
   "engines": {
     "node": ">=22"
   },
+  "exports": {
+    ".": "./src/server.js",
+    "./sdk": "./sdk/client.js"
+  },
   "scripts": {
     "start": "node src/server.js",
+    "stop": "node src/stop.js",
     "dev": "node --watch src/server.js",
     "test": "node --test"
   }

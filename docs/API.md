@@ -2,6 +2,8 @@
 
 Base URL: `http://localhost:8787`
 
+A zero-dependency reference client is available at [sdk/client.js](../sdk/client.js).
+
 All responses are JSON. Errors:
 
 ```json

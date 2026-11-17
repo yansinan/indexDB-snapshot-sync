@@ -7,6 +7,8 @@
  */
 
 import { createServer } from 'node:http';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { bearerToken } from './auth.js';
 import { AuthError, AuthStore } from './auth-store.js';
 import { BootstrapCode, generateBootstrapCode } from './bootstrap-code.js';
@@ -316,8 +318,27 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     bootstrapCode,
     onBootstrapCode: printBootstrap,
   });
-  server.listen(port, host, () => {
+  const pidFile = process.env.PID_FILE ?? path.join(dataDir, 'sync.pid');
+  server.listen(port, host, async () => {
     console.log(`indexDB-snapshot-sync → http://${host}:${port}`);
     console.log(`storage → ${dataDir}`);
+    try {
+      await mkdir(dataDir, { recursive: true, mode: 0o750 });
+      await writeFile(pidFile, `${process.pid}\n`, { mode: 0o640 });
+      console.log(`pid file → ${pidFile}`);
+    } catch (error) {
+      console.error('[pid] failed to write pid file; npm stop may not work', error);
+    }
   });
+
+  const shutdown = (signal) => {
+    console.log(`\n[shutdown] ${signal}`);
+    server.close(async () => {
+      await rm(pidFile, { force: true }).catch(() => {});
+      process.exit(0);
+    });
+    setTimeout(() => process.exit(1), 5000).unref();
+  };
+  process.once('SIGINT', () => shutdown('SIGINT'));
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
 }

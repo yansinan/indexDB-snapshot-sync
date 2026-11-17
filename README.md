@@ -47,6 +47,15 @@ If `npm` is not on PATH, the equivalent command is:
 node src/server.js
 ```
 
+Stop it with:
+
+```bash
+npm stop
+```
+
+`npm stop` reads `DATA_DIR/sync.pid` (default `./data/sync.pid`), sends `SIGTERM`,
+and waits for the process to exit. Use the same `DATA_DIR` as the server.
+
 On startup the server prints a one-time project creation code:
 
 ```text
@@ -119,10 +128,87 @@ Content-Type: application/json
 The snapshot project/namespace are derived from the device token; clients cannot
 choose another user's namespace.
 
+## SDK usage
+
+A zero-dependency reference client is in [sdk/client.js](sdk/client.js).
+It handles HTTP and device-token plumbing only; the host app still owns
+IndexedDB export/import/merge and token persistence.
+
+```js
+import { createSyncClient } from './sdk/client.js';
+
+const baseUrl = 'http://localhost:8787';
+
+// First client: create project + user 甲.
+// The bootstrapCode is printed in the server log.
+const sync = createSyncClient({ baseUrl });
+const first = await sync.enroll({
+  bootstrapCode: 'BOOT-...',
+  userName: '用户甲',
+  deviceName: '甲的浏览器',
+});
+
+// Persist these outside the synced snapshot.
+localStorage.setItem('sync.projectId', first.projectId);
+localStorage.setItem('sync.deviceToken', first.deviceToken);
+
+// The client now uses first.deviceToken automatically.
+await sync.me();
+```
+
+### New user in the same project
+
+```js
+const yi = await createSyncClient({ baseUrl }).enroll({
+  projectId: first.projectId,
+  userName: '用户乙',
+  deviceName: '乙的浏览器',
+});
+```
+
+### Add another device to user 甲
+
+```js
+const pairing = await sync.createPairingCode({ ttlSeconds: 600 });
+const ipad = await createSyncClient({ baseUrl }).enroll({
+  pairingCode: pairing.code,
+  deviceName: '甲的 iPad',
+});
+// ipad.user.id === first.user.id
+```
+
+### Pull, merge, and push
+
+```js
+const remote = await sync.pull(); // null when no snapshot exists yet
+const local = await exportLocalIndexedDB(); // host-specific
+const merged = mergeSnapshots(local, remote?.snapshot ?? {});
+await importLocalIndexedDB(merged);
+
+try {
+  await sync.push({
+    baseRevision: remote?.revision ?? 0,
+    snapshot: merged,
+  });
+} catch (error) {
+  if (error.status === 409) {
+    // Remote changed: re-pull, merge again, retry with error.body.current.revision.
+  }
+  throw error;
+}
+```
+
+Rules:
+
+- `deviceToken` is a secret; store it outside the snapshot.
+- `pull()` returns `null` for a new user.
+- `push()` throws `SyncHttpError` on `409`; its `body.current` contains the latest snapshot.
+- The SDK does not merge; merge is application-specific.
+
 ## Tests
 
 ```bash
-node --test
+npm test
 ```
 
 ## Docker (production only)

@@ -14,7 +14,8 @@
 
 ## Next
 
-- [ ] browser sync SDK (enroll, token storage, export/import, retry)
+- [x] reference HTTP SDK (`sdk/client.js`)
+- [ ] full browser sync SDK (IndexedDB export/import/merge helpers)
 - [ ] snapshot merge helper for IndexedDB stores
 - [ ] bootstrap enrollment idempotency
 - [ ] snapshot history/pruning

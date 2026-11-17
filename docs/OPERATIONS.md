@@ -15,6 +15,15 @@ npm start
 
 Read the bootstrap code from the terminal. Without npm, use `node src/server.js`.
 
+Stop with:
+
+```bash
+npm stop
+```
+
+The server writes `DATA_DIR/sync.pid`. `npm stop` reads that file; use the same
+`DATA_DIR` as the server. A missing/stale PID file exits successfully.
+
 ## Docker
 
 Production only. Local development does not require Docker.

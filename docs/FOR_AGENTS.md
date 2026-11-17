@@ -13,6 +13,7 @@ Read this before changing the service.
 
 ```bash
 npm start
+npm stop
 npm test
 ```
 
@@ -33,6 +34,8 @@ src/auth-store.js     users, devices, pairing codes, project bootstrap
 src/bootstrap-code.js runtime one-time bootstrap code and rotation
 src/auth.js           hashing and bearer parsing
 src/store.js          snapshot files, revisions, atomic writes
+src/stop.js           npm stop PID handling
+sdk/client.js         zero-dependency reference HTTP client
 test/                 node:test suites
 docs/                 handoff and operations documentation
 ```
@@ -100,6 +103,8 @@ pairingCode    -> new device for existing user
 
 1. Browser SDK:
    `enroll() → store deviceToken → exportAll/pull/merge/importAll/push`.
+   A reference HTTP-only SDK now exists in `sdk/client.js`; expand it with host
+   persistence/merge helpers where needed.
 2. Idempotency for bootstrap enrollment.
 3. Snapshot history/retention.
 4. Device revocation API with separate auth.
