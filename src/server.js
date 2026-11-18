@@ -300,7 +300,7 @@ export function createSnapshotServer({
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const port = Number(process.env.PORT ?? 8787);
+  const port = Number(process.env.PORT ?? 4010);
   const host = process.env.HOST ?? '0.0.0.0';
   const dataDir = process.env.DATA_DIR ?? './data';
   const corsOrigin = process.env.CORS_ORIGIN ?? '';

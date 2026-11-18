@@ -39,7 +39,7 @@ cd /Users/Dr/Documents/deepseek-harness/snap-sync
 npm start
 ```
 
-The service listens on `http://localhost:8787`.
+The service listens on `http://localhost:4010`.
 
 If `npm` is not on PATH, the equivalent command is:
 
@@ -67,7 +67,7 @@ On startup the server prints a one-time project creation code:
 Create the first project and user:
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8787/v1/enroll \
+curl -sS -X POST http://127.0.0.1:4010/v1/enroll \
   -H 'content-type: application/json' \
   -d '{"bootstrapCode":"BOOT-...","userName":"用户甲","deviceName":"甲的浏览器"}'
 ```
@@ -88,7 +88,7 @@ The old bootstrap code is invalid immediately. The server prints a new one.
 Create another user in the same project:
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8787/v1/enroll \
+curl -sS -X POST http://127.0.0.1:4010/v1/enroll \
   -H 'content-type: application/json' \
   -d '{"projectId":"proj_...","userName":"用户乙","deviceName":"乙的浏览器"}'
 ```
@@ -97,13 +97,13 @@ Add another device to user 甲:
 
 ```bash
 # 甲's existing device generates a code
-curl -sS -X POST http://127.0.0.1:8787/v1/pairing-codes \
+curl -sS -X POST http://127.0.0.1:4010/v1/pairing-codes \
   -H "authorization: Bearer $JIA_DEVICE_TOKEN" \
   -H 'content-type: application/json' \
   -d '{"ttlSeconds":600}'
 
 # new device enrolls with the pairing code
-curl -sS -X POST http://127.0.0.1:8787/v1/enroll \
+curl -sS -X POST http://127.0.0.1:4010/v1/enroll \
   -H 'content-type: application/json' \
   -d '{"pairingCode":"ABCD-EFGH","deviceName":"甲的 iPad"}'
 ```
@@ -137,7 +137,7 @@ IndexedDB export/import/merge and token persistence.
 ```js
 import { createSyncClient } from './sdk/client.js';
 
-const baseUrl = 'http://localhost:8787';
+const baseUrl = 'http://localhost:4010';
 
 // First client: create project + user 甲.
 // The bootstrapCode is printed in the server log.

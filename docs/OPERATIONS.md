@@ -71,7 +71,7 @@ backup.
 
 ## Reverse proxy
 
-Terminate TLS at Caddy/Traefik and proxy to port `8787`.
+Terminate TLS at Caddy/Traefik and proxy to port `4010`.
 
 If the browser runs on a different origin:
 

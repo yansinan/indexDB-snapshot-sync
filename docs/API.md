@@ -1,6 +1,6 @@
 # API
 
-Base URL: `http://localhost:8787`
+Base URL: `http://localhost:4010`
 
 A zero-dependency reference client is available at [sdk/client.js](../sdk/client.js).
 

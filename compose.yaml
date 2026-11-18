@@ -1,20 +1,52 @@
+# indexDB-snapshot-sync — 最小 compose（不构建自定义镜像，直接用官方 node 镜像）
+# ────────────────────────────────────────────────────────────────
+# Usage:
+#   sudo docker compose up -d      # 启动（首次会拉 node:24-alpine）
+#   sudo docker compose logs -f    # 看日志
+#   sudo docker compose down       # 停止
+#
+# 设计原则：
+#   - 不写 Dockerfile：服务零依赖（只用 node 内置模块），直接跑 src/server.js
+#   - 源码 bind mount 到 /app（只读），改代码重启容器即生效
+#   - ./data bind mount 到 /data（保留已有 enrollment / 项目 / 快照）
+#   - 端口 4010：避开 PSM(4003)、spellwell(4173)，也不占 hermes-webui 的 8787
+#   - 以宿主机 uid 1000 运行；HOME=/tmp 避免任何外溢
+#   - 最小权限：read_only 根文件系统 + tmpfs /tmp + cap_drop ALL
+
 services:
   sync:
-    build: .
-    environment:
-      PORT: 8787
-      DATA_DIR: /data
-      CORS_ORIGIN: ${CORS_ORIGIN:-}
+    image: node:24-alpine
+    container_name: indexdb-snapshot-sync
+    restart: on-failure:10
+    user: "1000:1000"
+    working_dir: /app
+    command: ["node", "src/server.js"]
     ports:
-      - "8787:8787"
+      - "4010:4010"
     volumes:
-      - sync-data:/data
+      - ./:/app:ro
+      - ./data:/data
+    environment:
+      - PORT=4010
+      - DATA_DIR=/data
+      - CORS_ORIGIN=${CORS_ORIGIN:-}
+      - HOME=/tmp
+      - TZ=Asia/Shanghai
     read_only: true
     tmpfs:
       - /tmp
     security_opt:
       - no-new-privileges:true
-    restart: unless-stopped
-
-volumes:
-  sync-data:
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4010/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
